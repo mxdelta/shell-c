@@ -1,4 +1,6 @@
 # shell-c
+---- для установки VC https://gist.github.com/Chenx221/6f4ed72cd785d80edb0bc50c9921daf7
+
 
 x86_64-w64-mingw32-gcc -o s2.exe shell2.c -lws2_32
 
